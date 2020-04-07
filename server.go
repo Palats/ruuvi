@@ -19,10 +19,20 @@ var (
 		Name: "tag_temperature",
 		Help: "Current temperature measured by the Tag.",
 	}, []string{"name", "id"})
+	tagPressure = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tag_pressure",
+		Help: "Current pressure measured by the Tag.",
+	}, []string{"name", "id"})
+	tagHumidity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tag_humidity",
+		Help: "Current humidity measured by the Tag.",
+	}, []string{"name", "id"})
 )
 
 func init() {
 	prometheus.MustRegister(tagTemperature)
+	prometheus.MustRegister(tagPressure)
+	prometheus.MustRegister(tagHumidity)
 }
 
 // Example: https://pastebin.com/ZpK0Nk2v
@@ -110,6 +120,8 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 
 	for _, tag := range data.Tags {
 		tagTemperature.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Temperature))
+		tagPressure.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Pressure))
+		tagHumidity.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Humidity))
 		fmt.Printf("Tag %s: temp=%f pressure=%f humidity=%f\n", tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
 	}
 }
