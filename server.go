@@ -10,7 +10,20 @@ import (
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var (
+	tagTemperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tag_temperature",
+		Help: "Current temperature measured by the Tag.",
+	}, []string{"name", "id"})
+)
+
+func init() {
+	prometheus.MustRegister(tagTemperature)
+}
 
 // Example: https://pastebin.com/ZpK0Nk2v
 
@@ -77,7 +90,6 @@ func New() *Server {
 // receive implements the endpoint receiving requests from the Ruuvi
 // Station app.
 func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
-
 	raw, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		fmt.Printf("Read body error: %v\n", err)
@@ -86,7 +98,6 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.m.Lock()
 	s.lastRaw = raw
 	s.m.Unlock()
-	// fmt.Printf("Data:\n%s\n", string(raw))
 
 	data := &Info{}
 	if err := json.Unmarshal(raw, data); err != nil {
@@ -96,8 +107,9 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.m.Lock()
 	s.lastParsed = data
 	s.m.Unlock()
-	// spew.Dump(data)
+
 	for _, tag := range data.Tags {
+		tagTemperature.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Temperature))
 		fmt.Printf("Tag %s: temp=%f pressure=%f humidity=%f\n", tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
 	}
 }
@@ -134,6 +146,7 @@ var indexTpl = template.Must(template.New("index").Parse(`
 
 func main() {
 	fmt.Println("Ruuvi gateway server")
+	http.Handle("/metrics", promhttp.Handler())
 	s := New()
 	http.HandleFunc("/", s.Serve)
 	log.Fatal(http.ListenAndServe(":7361", nil))
