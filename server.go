@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/prometheus/client_golang/prometheus"
@@ -25,7 +26,22 @@ var (
 		"movementcounter",
 		"measurementsequencenumber",
 	}
-	tagMetrics map[string]*prometheus.GaugeVec
+	tagMetrics  map[string]*prometheus.GaugeVec
+	tagUpdateAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_updateat",
+	}, []string{"name", "id"})
+	tagStationBatteryLevel = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_station_batterylevel",
+	}, []string{"name", "id"})
+	tagStationLocationAccuracy = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_station_location_accuracy",
+	}, []string{"name", "id"})
+	tagStationLocationLatitude = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_station_location_latitude",
+	}, []string{"name", "id"})
+	tagStationLocationLongitude = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_station_location_longitude",
+	}, []string{"name", "id"})
 )
 
 func init() {
@@ -36,41 +52,48 @@ func init() {
 		}, []string{"name", "id"})
 		prometheus.MustRegister(tagMetrics[name])
 	}
+	prometheus.MustRegister(tagUpdateAt)
+	prometheus.MustRegister(tagStationBatteryLevel)
+	prometheus.MustRegister(tagStationLocationAccuracy)
+	prometheus.MustRegister(tagStationLocationLatitude)
+	prometheus.MustRegister(tagStationLocationLongitude)
 }
 
 // Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
 // Example: https://pastebin.com/ZpK0Nk2v
 
+const timeFormat = "2006-01-02T15:04:05-0700"
+
 // Info describes the format of update from RuuviStation.
 type Info struct {
-	DeviceID     string       `json:"deviceId"`
-	EventID      string       `json:"eventId"`
-	BatteryLevel int64        `json:"batteryLevel"`
-	Time         string       `json:"time"` // "2020-04-06T22:15:14+0200"
-	Location     InfoLocation `json:"location"`
-	Tags         []InfoTag    `json:"tags"`
+	DeviceID     string
+	EventID      string
+	BatteryLevel int64
+	Time         string // "2020-04-06T22:15:14+0200"
+	Location     InfoLocation
+	Tags         []InfoTag
 }
 
 // InfoLocation .
 type InfoLocation struct {
-	Accuracy  float64 `json:"accuracy"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
+	Accuracy  float64
+	Latitude  float64
+	Longitude float64
 }
 
 // InfoTag is the info about the specific tag.
 type InfoTag struct {
 	ID          string
-	Name        string `json:"name"`
+	Name        string
 	Pressure    float64
-	Humidity    float64 `json:"humidity"`
+	Humidity    float64
 	Temperature float64
 
 	AccelX float64
 	AccelY float64
 	AccelZ float64
 
-	UpdateAt                  string
+	UpdateAt                  string // "2020-04-09T15:01:59+0200
 	DataFormat                int64
 	DefaultBackground         int64
 	Favorite                  bool
@@ -84,7 +107,7 @@ type InfoTag struct {
 	RawDataBlob InfoBlob
 }
 
-// InfoBlob is the raw data of the sensos.
+// InfoBlob is the raw data of the sensors.
 type InfoBlob struct {
 	Blob []int8
 }
@@ -123,12 +146,10 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.m.Unlock()
 
 	for _, tag := range data.Tags {
-		/*tagTemperature.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Temperature))
-		tagPressure.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Pressure))
-		tagHumidity.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Humidity))*/
 		fmt.Printf("Tag %s: temp=%f pressure=%f humidity=%f\n", tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
 		v := reflect.ValueOf(tag)
 		for _, name := range tagMetricsNames {
+			// Generic fields attached to the tag.
 			fv := v.FieldByNameFunc(func(fname string) bool {
 				return strings.ToLower(fname) == name
 			})
@@ -139,6 +160,20 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 				f = fv.Float()
 			}
 			tagMetrics[name].With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(f)
+
+			// Export updated time.
+			t, err := time.Parse(timeFormat, tag.UpdateAt)
+			if err != nil {
+				fmt.Printf("Unable to parse %q: %v\n", tag.UpdateAt, err)
+			} else {
+				tagUpdateAt.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(t.Unix()))
+			}
+
+			// Export station info for each tag.
+			tagStationBatteryLevel.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(data.BatteryLevel))
+			tagStationLocationAccuracy.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Accuracy)
+			tagStationLocationLatitude.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Latitude)
+			tagStationLocationLongitude.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Longitude)
 		}
 	}
 }
