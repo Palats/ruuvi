@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +17,10 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	port = flag.Int("port", 7361, "Port to serve on")
 )
 
 var (
@@ -209,9 +215,18 @@ var indexTpl = template.Must(template.New("index").Parse(`
 `))
 
 func main() {
+	flag.Parse()
+
 	fmt.Println("Ruuvi gateway server")
 	http.Handle("/metrics", promhttp.Handler())
 	s := New()
 	http.HandleFunc("/", s.Serve)
-	log.Fatal(http.ListenAndServe(":7361", nil))
+
+	addr := fmt.Sprintf(":%d", *port)
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = ""
+	}
+	fmt.Printf("Listening on http://%s%s\n", hostname, addr)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
