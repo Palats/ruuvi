@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
@@ -15,26 +17,28 @@ import (
 )
 
 var (
-	tagTemperature = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "tag_temperature",
-		Help: "Current temperature measured by the Tag.",
-	}, []string{"name", "id"})
-	tagPressure = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "tag_pressure",
-		Help: "Current pressure measured by the Tag.",
-	}, []string{"name", "id"})
-	tagHumidity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "tag_humidity",
-		Help: "Current humidity measured by the Tag.",
-	}, []string{"name", "id"})
+	tagMetricsNames = []string{
+		"temperature", "pressure", "humidity",
+		"accelx", "accely", "accelz",
+		"voltage", "txpower", "rssi",
+		"dataformat",
+		"movementcounter",
+		"measurementsequencenumber",
+	}
+	tagMetrics map[string]*prometheus.GaugeVec
 )
 
 func init() {
-	prometheus.MustRegister(tagTemperature)
-	prometheus.MustRegister(tagPressure)
-	prometheus.MustRegister(tagHumidity)
+	tagMetrics = map[string]*prometheus.GaugeVec{}
+	for _, name := range tagMetricsNames {
+		tagMetrics[name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ruuvi_" + name,
+		}, []string{"name", "id"})
+		prometheus.MustRegister(tagMetrics[name])
+	}
 }
 
+// Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
 // Example: https://pastebin.com/ZpK0Nk2v
 
 // Info describes the format of update from RuuviStation.
@@ -119,10 +123,23 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.m.Unlock()
 
 	for _, tag := range data.Tags {
-		tagTemperature.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Temperature))
+		/*tagTemperature.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Temperature))
 		tagPressure.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Pressure))
-		tagHumidity.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Humidity))
+		tagHumidity.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(tag.Humidity))*/
 		fmt.Printf("Tag %s: temp=%f pressure=%f humidity=%f\n", tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
+		v := reflect.ValueOf(tag)
+		for _, name := range tagMetricsNames {
+			fv := v.FieldByNameFunc(func(fname string) bool {
+				return strings.ToLower(fname) == name
+			})
+			var f float64
+			if fv.Kind() == reflect.Int64 {
+				f = float64(fv.Int())
+			} else {
+				f = fv.Float()
+			}
+			tagMetrics[name].With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(f)
+		}
 	}
 }
 
