@@ -1,0 +1,1 @@
+This server accepts requests from the [Ruuvi Station Android app](https://play.google.com/store/apps/details?id=com.ruuvi.station) and exports the data to a `/metrics` endpoint suitable for [Prometheus](https://prometheus.io/).
