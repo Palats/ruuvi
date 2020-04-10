@@ -20,7 +20,8 @@ import (
 )
 
 var (
-	port = flag.Int("port", 7361, "Port to serve on")
+	port  = flag.Int("port", 7361, "Port to serve on")
+	debug = flag.Bool("debug", false, "If true, export info about what was submitted")
 )
 
 var (
@@ -198,7 +199,13 @@ func (s *Server) Serve(w http.ResponseWriter, r *http.Request) {
 		"LastParsedDump": spew.Sdump(s.lastParsed),
 	}
 	s.m.Unlock()
-	err := indexTpl.Execute(w, data)
+
+	var err error
+	if *debug {
+		err = indexDebugTpl.Execute(w, data)
+	} else {
+		err = indexTpl.Execute(w, data)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -206,6 +213,12 @@ func (s *Server) Serve(w http.ResponseWriter, r *http.Request) {
 }
 
 var indexTpl = template.Must(template.New("index").Parse(`
+<html><body>
+Ruuvi Station proxy server.
+</body></html>
+`))
+
+var indexDebugTpl = template.Must(template.New("index").Parse(`
 <html><body>
 <h1>Last parsed update</h1>
 <pre>{{.LastParsedDump}}</pre>
