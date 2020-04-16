@@ -15,13 +15,15 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/goccy/go-yaml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
-	port  = flag.Int("port", 7361, "Port to serve on")
-	debug = flag.Bool("debug", false, "If true, export info about what was submitted")
+	port           = flag.Int("port", 7361, "Port to serve on")
+	debug          = flag.Bool("debug", false, "If true, export info about what was submitted")
+	configFilename = flag.String("config", "", "YAML configuration file to use, optional")
 )
 
 var (
@@ -67,7 +69,7 @@ func init() {
 }
 
 // Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
-// Example: https://pastebin.com/ZpK0Nk2v
+// Example data in exampledata.json.
 
 const timeFormat = "2006-01-02T15:04:05-0700"
 
@@ -119,16 +121,40 @@ type InfoBlob struct {
 	Blob []int8
 }
 
+// Config describes the accepted format for the config file.
+type Config struct {
+	// Gives override per tag. Keyed by the ID of the tag.
+	Tags []*ConfigTagInfo `yaml:"tags"`
+}
+
+// ConfigTagInfo contains configuration per tag.
+type ConfigTagInfo struct {
+	// ID of the tag; serves as key here.
+	ID string `yaml:"id"`
+
+	// If not empty, use this name instead of the one provided by Ruuvi Station.
+	Name string `yaml:"name"`
+}
+
 // Server takes care of receiving measures and export them back.
 type Server struct {
+	cfgPerTag map[string]*ConfigTagInfo
+
 	m          sync.Mutex
 	lastRaw    []byte
 	lastParsed *Info
 }
 
 // New creates a new server.
-func New() *Server {
-	return &Server{}
+func New(cfg *Config) *Server {
+	s := &Server{
+		cfgPerTag: make(map[string]*ConfigTagInfo),
+	}
+	for _, tagCfg := range cfg.Tags {
+		s.cfgPerTag[tagCfg.ID] = tagCfg
+		fmt.Printf("Mapping %q to %q\n", tagCfg.ID, tagCfg.Name)
+	}
+	return s
 }
 
 // receive implements the endpoint receiving requests from the Ruuvi
@@ -153,12 +179,16 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.m.Unlock()
 
 	for _, tag := range data.Tags {
-		fmt.Printf("Tag %s: temp=%f pressure=%f humidity=%f\n", tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
+		tagName := tag.Name
+		if s.cfgPerTag[tag.ID] != nil && s.cfgPerTag[tag.ID].Name != "" {
+			tagName = s.cfgPerTag[tag.ID].Name
+		}
+		fmt.Printf("Tag %s: id=%q name=%q temp=%f pressure=%f humidity=%f\n", tagName, tag.ID, tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
 		v := reflect.ValueOf(tag)
-		for _, name := range tagMetricsNames {
+		for _, metricName := range tagMetricsNames {
 			// Generic fields attached to the tag.
 			fv := v.FieldByNameFunc(func(fname string) bool {
-				return strings.ToLower(fname) == name
+				return strings.ToLower(fname) == metricName
 			})
 			var f float64
 			if fv.Kind() == reflect.Int64 {
@@ -166,21 +196,21 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 			} else {
 				f = fv.Float()
 			}
-			tagMetrics[name].With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(f)
+			tagMetrics[metricName].With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(f)
 
 			// Export updated time.
 			t, err := time.Parse(timeFormat, tag.UpdateAt)
 			if err != nil {
 				fmt.Printf("Unable to parse %q: %v\n", tag.UpdateAt, err)
 			} else {
-				tagUpdateAt.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(t.Unix()))
+				tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(float64(t.Unix()))
 			}
 
 			// Export station info for each tag.
-			tagStationBatteryLevel.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(float64(data.BatteryLevel))
-			tagStationLocationAccuracy.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Accuracy)
-			tagStationLocationLatitude.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Latitude)
-			tagStationLocationLongitude.With(prometheus.Labels{"name": tag.Name, "id": tag.ID}).Set(data.Location.Longitude)
+			tagStationBatteryLevel.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(float64(data.BatteryLevel))
+			tagStationLocationAccuracy.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Accuracy)
+			tagStationLocationLatitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Latitude)
+			tagStationLocationLongitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Longitude)
 		}
 	}
 }
@@ -232,7 +262,19 @@ func main() {
 
 	fmt.Println("Ruuvi gateway server")
 	http.Handle("/metrics", promhttp.Handler())
-	s := New()
+
+	cfg := &Config{}
+	if *configFilename != "" {
+		raw, err := ioutil.ReadFile(*configFilename)
+		if err != nil {
+			log.Fatalf("Unable to read %q: %v", *configFilename, err)
+		}
+		if err := yaml.Unmarshal(raw, cfg); err != nil {
+			log.Fatalf("Unable to read %q: %v", *configFilename, err)
+		}
+	}
+
+	s := New(cfg)
 	http.HandleFunc("/", s.Serve)
 
 	addr := fmt.Sprintf(":%d", *port)
