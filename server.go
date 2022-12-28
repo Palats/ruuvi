@@ -183,7 +183,10 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 		if s.cfgPerTag[tag.ID] != nil && s.cfgPerTag[tag.ID].Name != "" {
 			tagName = s.cfgPerTag[tag.ID].Name
 		}
-		fmt.Printf("Tag %s: id=%q name=%q temp=%f pressure=%f humidity=%f\n", tagName, tag.ID, tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
+		if *debug {
+			fmt.Printf("Tag %s: id=%q name=%q temp=%f pressure=%f humidity=%f\n", tagName, tag.ID, tag.Name, tag.Temperature, tag.Pressure, tag.Humidity)
+		}
+
 		v := reflect.ValueOf(tag)
 		for _, metricName := range tagMetricsNames {
 			// Generic fields attached to the tag.
