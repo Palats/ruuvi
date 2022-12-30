@@ -71,8 +71,6 @@ func init() {
 // Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
 // Example data in exampledata.json.
 
-const timeFormat = "2006-01-02T15:04:05-0700"
-
 // Info describes the format of update from RuuviStation.
 type Info struct {
 	DeviceID     string
@@ -202,7 +200,14 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 			tagMetrics[metricName].With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(f)
 
 			// Export updated time.
-			t, err := time.Parse(timeFormat, tag.UpdateAt)
+			var err error
+			var t time.Time
+			for _, timeFormat := range []string{"2006-01-02T15:04:05-0700", "2006-01-02T15:04:05-07:00"} {
+				t, err = time.Parse(timeFormat, tag.UpdateAt)
+				if err == nil {
+					break
+				}
+			}
 			if err != nil {
 				fmt.Printf("Unable to parse %q: %v\n", tag.UpdateAt, err)
 			} else {
