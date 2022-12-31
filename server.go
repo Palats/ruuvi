@@ -225,7 +225,9 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 
 // Serve .
 func (s *Server) Serve(w http.ResponseWriter, r *http.Request) {
-	fmt.Printf("# Request method=%s, url=%s\n", r.Method, r.URL.String())
+	if *debug {
+		fmt.Printf("# Request method=%s, url=%s\n", r.Method, r.URL.String())
+	}
 	if r.Method == "POST" {
 		s.receive(w, r)
 	}
