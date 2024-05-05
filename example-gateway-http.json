@@ -1,0 +1,40 @@
+{
+    "data": {
+        "coordinates": "",
+        "timestamp": 1714937403,
+        "nonce": 1252139982,
+        "gw_mac": "CF:78:3E:86:ED:88",
+        "tags": {
+            "EF:DD:5A:88:65:95": {
+                "rssi": -61,
+                "timestamp": 1714937403,
+                "data": "0201061BFF990405129A3DCFB3E60008FFDC03F091F68B8045EFDD5A886595"
+            },
+            "C7:61:6C:A5:B1:44": {
+                "rssi": -64,
+                "timestamp": 1714937403,
+                "data": "0201061BFF990405123E4284B44C0050FFEC041CA4B66C4E28C7616CA5B144"
+            },
+            "D4:A5:CB:FD:49:24": {
+                "rssi": -50,
+                "timestamp": 1714937403,
+                "data": "0201061BFF99040512D03D07B4310034FFCC0420A1B69DA8A9D4A5CBFD4924"
+            },
+            "F8:64:D9:66:CD:5B": {
+                "rssi": -71,
+                "timestamp": 1714937403,
+                "data": "0201061BFF99040512EA3F49B42F0000FFA80414AC36A3F8BAF864D966CD5B"
+            },
+            "DF:0A:D1:6C:4D:9D": {
+                "rssi": -84,
+                "timestamp": 1714937397,
+                "data": "0201061BFF9904050EC858DCB40CFFF0000003EC9EB66035F7DF0AD16C4D9D"
+            },
+            "D8:A1:7D:CD:EB:C4": {
+                "rssi": -65,
+                "timestamp": 1714937398,
+                "data": "0201061BFF990405141C3989B44DFFC8FFF403E4A336F7BAB5D8A17DCDEBC4"
+            }
+        }
+    }
+}

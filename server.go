@@ -1,11 +1,12 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ var (
 	port           = flag.Int("port", 7361, "Port to serve on")
 	debug          = flag.Bool("debug", false, "If true, export info about what was submitted")
 	configFilename = flag.String("config", "", "YAML configuration file to use, optional")
+	decodeData     = flag.String("decode_data", "", "Decode the provide bluetooth advertised data encoded in hex and exit. For debugging.")
 )
 
 var (
@@ -71,25 +73,27 @@ func init() {
 // Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
 // Example data in exampledata.json.
 
-// Info describes the format of update from RuuviStation.
-type Info struct {
+// StationInfo describes the format of update from RuuviStation.
+// Doc at https://docs.ruuvi.com/ruuvi-station-app/gateway
+// Example data in example-station.json.
+type StationInfo struct {
 	DeviceID     string
 	EventID      string
 	BatteryLevel int64
 	Time         string // "2020-04-06T22:15:14+0200"
-	Location     InfoLocation
-	Tags         []InfoTag
+	Location     StationLocation
+	Tags         []StationTag
 }
 
-// InfoLocation .
-type InfoLocation struct {
+// StationLocation .
+type StationLocation struct {
 	Accuracy  float64
 	Latitude  float64
 	Longitude float64
 }
 
-// InfoTag is the info about the specific tag.
-type InfoTag struct {
+// StationTag is the info about the specific tag.
+type StationTag struct {
 	ID          string
 	Name        string
 	Pressure    float64
@@ -111,12 +115,211 @@ type InfoTag struct {
 	TxPower float64
 	Voltage float64
 
-	RawDataBlob InfoBlob
+	RawDataBlob StationBlob
 }
 
-// InfoBlob is the raw data of the sensors.
-type InfoBlob struct {
+// StationBlob is the raw data of the sensors.
+type StationBlob struct {
 	Blob []int8
+}
+
+// BluetoothAdvertisement is the data contains in a given Ruuvi sensor
+// bluetooth message.
+// https://docs.ruuvi.com/communication/bluetooth-advertisements
+type BluetoothAdvertisement struct {
+	// Mandatory flags == 0x02 0x01 0x04 or 0x06 ?
+	Flags [3]byte
+	// Content length, == 0x1B == 27.
+	// That's the content after this field - incl. type & manufacturer.
+	Length byte
+	// Type == 0xff
+	Type byte
+	// Manufacturer ID, least significant byte first: 0x0499 = Ruuvi Innovations Ltd
+	Manufacturer uint16
+	// Raw payload
+	Payload []byte
+
+	Data5 DataFormat5
+}
+
+// DataFormat5 represents the decoded values of a format 5 message.
+// https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-5-rawv2
+type DataFormat5 struct {
+	// 0x5
+	FormatVersion byte
+	// Temperature in 0.005 degrees
+	Temperature int16
+	// Humidity in 0.0025% (0-163.83% range, though realistically 0-100%)
+	Humidity uint16
+	// Pressure (16bit unsigned) in 1 Pa units, with offset of -50000 Pa
+	// i.e., actual pressure is this field + 50k Pa
+	Pressure uint16
+
+	// Acceleration, in milli-G
+	AccelX int16
+	AccelY int16
+	AccelZ int16
+
+	// Power info (11+5bit unsigned)
+	// first 11 bits is the battery voltage above 1.6V, in millivolts (1.6V to 3.646V range).
+	// Last 5 bits unsigned are the TX power above -40dBm, in 2dBm steps. (-40dBm to +20dBm range)
+	// Probably invalid currently.
+	CodedPower uint16
+	Voltage    uint16
+	RSSI       uint16
+
+	// Incremented by motion detection interrupts from accelerometer
+	MovementCounter byte
+	// Each time a measurement is taken, this is incremented by one, used for measurement
+	// de-duplication. Depending on the transmit interval, multiple packets with the same
+	// measurements can be sent, and there may be measurements that never were sent.
+	MeasureSequence uint16
+	// 48bit MAC address
+	MacAddress [6]byte
+}
+
+func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	lastIdx := -1
+	consumeByte := func() (byte, error) {
+		lastIdx++
+		if len(decoded) <= lastIdx {
+			return 0, fmt.Errorf("not enough data for index %d", lastIdx)
+		}
+		return decoded[lastIdx], nil
+	}
+	// Little endian
+	consumeLEuint16 := func() (uint16, error) {
+		b1, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		return uint16(b1) + 256*uint16(b2), nil
+	}
+	// Big endian
+	consumeBEuint16 := func() (uint16, error) {
+		b1, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		return uint16(b2) + 256*uint16(b1), nil
+	}
+	// Big endian
+	consumeBEint16 := func() (int16, error) {
+		b1, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		return int16(b2) + 256*int16(b1), nil
+	}
+
+	var adv BluetoothAdvertisement
+
+	// Parse flags
+	if adv.Flags[0], err = consumeByte(); err != nil {
+		return nil, err
+	}
+	if adv.Flags[1], err = consumeByte(); err != nil {
+		return nil, err
+	}
+	if adv.Flags[2], err = consumeByte(); err != nil {
+		return nil, err
+	}
+
+	// Parse length
+	if adv.Length, err = consumeByte(); err != nil {
+		return nil, err
+	}
+	if got, want := adv.Length, byte(27); got != want {
+		return nil, fmt.Errorf("got 0x%x at index %d, wanted 0x%x", got, lastIdx, want)
+	}
+
+	// Parse type
+	if adv.Type, err = consumeByte(); err != nil {
+		return nil, err
+	}
+	if got, want := adv.Type, byte(0xff); got != want {
+		return nil, fmt.Errorf("got 0x%x at index %d, wanted 0x%x", got, lastIdx, want)
+	}
+
+	// Parse manufacturer
+	if adv.Manufacturer, err = consumeLEuint16(); err != nil {
+		return nil, err
+	}
+	if got, want := adv.Manufacturer, uint16(0x0499); got != want {
+		return nil, fmt.Errorf("got manufacturer ID 0x%x, wanted 0x%x", got, want)
+	}
+
+	// Get the rest of the payload
+	// That does not advance lastIdx - we're just doing a copy here.
+	adv.Payload = decoded[lastIdx+1:]
+	if got, want := len(adv.Payload)+3, int(adv.Length); got != want {
+		return nil, fmt.Errorf("got %d bytes for payload, while length indicates %d", got, want)
+	}
+
+	// Decode format v5
+	if adv.Data5.FormatVersion, err = consumeByte(); err != nil {
+		return nil, err
+	}
+	if got, want := adv.Data5.FormatVersion, byte(5); got != want {
+		return nil, fmt.Errorf("got format version %d, wanted %d", got, want)
+	}
+
+	if adv.Data5.Temperature, err = consumeBEint16(); err != nil {
+		return nil, err
+	}
+	if adv.Data5.Humidity, err = consumeBEuint16(); err != nil {
+		return nil, err
+	}
+	if adv.Data5.Pressure, err = consumeBEuint16(); err != nil {
+		return nil, err
+	}
+	if adv.Data5.AccelX, err = consumeBEint16(); err != nil {
+		return nil, err
+	}
+	if adv.Data5.AccelY, err = consumeBEint16(); err != nil {
+		return nil, err
+	}
+	if adv.Data5.AccelZ, err = consumeBEint16(); err != nil {
+		return nil, err
+	}
+
+	// Power decoding seem off
+	if adv.Data5.CodedPower, err = consumeLEuint16(); err != nil {
+		return nil, err
+	}
+	adv.Data5.Voltage = adv.Data5.CodedPower & (1<<11 - 1)
+	adv.Data5.RSSI = (adv.Data5.CodedPower >> 11) & (1<<5 - 1)
+	if adv.Data5.MovementCounter, err = consumeByte(); err != nil {
+		return nil, err
+	}
+
+	if adv.Data5.MeasureSequence, err = consumeBEuint16(); err != nil {
+		return nil, err
+	}
+	for i := 0; i < 6; i++ {
+		if adv.Data5.MacAddress[i], err = consumeByte(); err != nil {
+			return nil, err
+		}
+	}
+
+	return &adv, nil
 }
 
 // Config describes the accepted format for the config file.
@@ -140,7 +343,7 @@ type Server struct {
 
 	m          sync.Mutex
 	lastRaw    []byte
-	lastParsed *Info
+	lastParsed *StationInfo
 }
 
 // New creates a new server.
@@ -157,8 +360,8 @@ func New(cfg *Config) *Server {
 
 // receive implements the endpoint receiving requests from the Ruuvi
 // Station app.
-func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
-	raw, err := ioutil.ReadAll(r.Body)
+func (s *Server) receive(_ http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		fmt.Printf("Read body error: %v\n", err)
 		return
@@ -167,7 +370,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 	s.lastRaw = raw
 	s.m.Unlock()
 
-	data := &Info{}
+	data := &StationInfo{}
 	if err := json.Unmarshal(raw, data); err != nil {
 		fmt.Printf("Umarshal error: %v\n", err)
 		return
@@ -270,12 +473,21 @@ var indexDebugTpl = template.Must(template.New("index").Parse(`
 func main() {
 	flag.Parse()
 
+	if *decodeData != "" {
+		adv, err := decodeBluetoothData(*decodeData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "decoding failure: %v\n", err)
+		}
+		spew.Dump(adv)
+		return
+	}
+
 	fmt.Println("Ruuvi gateway server")
 	http.Handle("/metrics", promhttp.Handler())
 
 	cfg := &Config{}
 	if *configFilename != "" {
-		raw, err := ioutil.ReadFile(*configFilename)
+		raw, err := os.ReadFile(*configFilename)
 		if err != nil {
 			log.Fatalf("Unable to read %q: %v", *configFilename, err)
 		}

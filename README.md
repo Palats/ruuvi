@@ -1,6 +1,8 @@
-# Ruuvi Station proxy server
+# Ruuvi proxy server
 
-This server accepts requests from the [Ruuvi Station Android app](https://play.google.com/store/apps/details?id=com.ruuvi.station) and exports the data to a `/metrics` endpoint suitable for [Prometheus](https://prometheus.io/).
+This server accepts data from Ruuvi sensors and exports the data to a `/metrics` endpoint suitable for [Prometheus](https://prometheus.io/). It supports:
+ - The [Ruuvi Station Android app](https://play.google.com/store/apps/details?id=com.ruuvi.station).
+ - The Ruuvi Gateway HTTP export.
 
 ## Usage
 
@@ -15,3 +17,9 @@ This server accepts requests from the [Ruuvi Station Android app](https://play.g
  * You probably want to activate `Background Scanning` also - otherwise it won't send data regularly. You might want to activate `Keep the device awake` also.
  * You can check that the data is there by looking at the `/metrics` endpoint.
  * Config Prometheus to scrape your server.
+
+
+## Notes
+
+ * `example-station.json`: Example of data sent by Ruuvi Station App gateway mode; https://docs.ruuvi.com/ruuvi-station-app/gateway
+ * `example-gateway-http.json`: Example of data sent by Ruuvi Gateway; https://docs.ruuvi.com/gw-data-formats/http-time-stamped-data-from-bluetooth-sensors
