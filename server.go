@@ -30,9 +30,21 @@ var (
 
 var (
 	tagMetricsNames = []string{
-		"temperature", "pressure", "humidity",
+		// In Celsius, float
+		"temperature",
+		// In hPa, float
+		"pressure",
+		// In humidity%, float
+		"humidity",
+		// In G, float
 		"accelx", "accely", "accelz",
-		"voltage", "txpower", "rssi",
+		// In volts, float (e.g., 2.7)
+		"voltage",
+		// e.g., 4 ?
+		"txpower",
+		// In DB, e.g., -52, -81
+		"rssi",
+		// Ruuvi tags data format, e.g., 5
 		"dataformat",
 		"movementcounter",
 		"measurementsequencenumber",
@@ -42,6 +54,7 @@ var (
 		Name: "ruuvi_updateat",
 	}, []string{"name", "id"})
 	tagStationBatteryLevel = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		// Percentage; e.g. 60
 		Name: "ruuvi_station_batterylevel",
 	}, []string{"name", "id"})
 	tagStationLocationAccuracy = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -69,9 +82,6 @@ func init() {
 	prometheus.MustRegister(tagStationLocationLatitude)
 	prometheus.MustRegister(tagStationLocationLongitude)
 }
-
-// Doc: https://github.com/ruuvi/com.ruuvi.station/wiki
-// Example data in exampledata.json.
 
 // StationInfo describes the format of update from RuuviStation.
 // Doc at https://docs.ruuvi.com/ruuvi-station-app/gateway
@@ -123,6 +133,40 @@ type StationBlob struct {
 	Blob []int8
 }
 
+// GatewayInfo represents the data sent over HTTP by the Ruuvi Gateway.
+// https://docs.ruuvi.com/gw-data-formats/http-time-stamped-data-from-bluetooth-sensors
+// See example-gateway-http.json for an example.
+// There are differences in JSON types between documentation and reality it seems.
+type GatewayInfo struct {
+	Data GatewayData `json:"data"`
+}
+
+type GatewayData struct {
+	// GPS-coordinates of Ruuvi Gateway (optional)
+	Coordinates string `json:"coordinates"`
+	// Timestamp (Unix-time) when the accumulated messages from Bluetooth-sensors was relayed by Gateway
+	// In doc: string
+	Timestamp int64 `json:"timestamp"`
+	// Nonce - sequentially incremented number for each message, the initial value of which is set randomly
+	// In doc: string
+	Nonce int64 `json:"nonce"`
+	// MAC-address of Ruuvi Gateway
+	GwMac string `json:"gw_mac"`
+
+	// Per mac-address
+	Tags map[string]GatewayTag `json:"tags"`
+}
+
+type GatewayTag struct {
+	// Typically, negative number
+	RSSI int64 `json:"rssi"`
+	// Timestamp (Unix-time) when the message from Bluetooth-sensor was received by Gateway
+	// In doc: string
+	Timestamp int64 `json:"timestamp"`
+	// Relayed message from Bluetooth-sensor in hex encoding
+	Data string `json:"data"`
+}
+
 // BluetoothAdvertisement is the data contains in a given Ruuvi sensor
 // bluetooth message.
 // https://docs.ruuvi.com/communication/bluetooth-advertisements
@@ -166,7 +210,7 @@ type DataFormat5 struct {
 	// Probably invalid currently.
 	CodedPower uint16
 	Voltage    uint16
-	RSSI       uint16
+	TxPower    uint16
 
 	// Incremented by motion detection interrupts from accelerometer
 	MovementCounter byte
@@ -176,6 +220,34 @@ type DataFormat5 struct {
 	MeasureSequence uint16
 	// 48bit MAC address
 	MacAddress [6]byte
+}
+
+func (d *DataFormat5) TemperatureInCelsius() float64 {
+	return float64(d.Temperature) * 0.005
+}
+
+func (d *DataFormat5) PressureInPa() float64 {
+	return float64(d.Pressure) + 50000
+}
+
+func (d *DataFormat5) HumidityInPercent() float64 {
+	return float64(d.Humidity) * 0.0025
+}
+
+func (d *DataFormat5) AccelXInG() float64 {
+	return float64(d.AccelX) / 1000.0
+}
+
+func (d *DataFormat5) AccelYInG() float64 {
+	return float64(d.AccelY) / 1000.0
+}
+
+func (d *DataFormat5) AccelZInG() float64 {
+	return float64(d.AccelZ) / 1000.0
+}
+
+func (d *DataFormat5) VoltageInVolts() float64 {
+	return 1.6 + float64(d.Voltage)/1000
 }
 
 func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
@@ -192,18 +264,6 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		}
 		return decoded[lastIdx], nil
 	}
-	// Little endian
-	consumeLEuint16 := func() (uint16, error) {
-		b1, err := consumeByte()
-		if err != nil {
-			return 0, err
-		}
-		b2, err := consumeByte()
-		if err != nil {
-			return 0, err
-		}
-		return uint16(b1) + 256*uint16(b2), nil
-	}
 	// Big endian
 	consumeBEuint16 := func() (uint16, error) {
 		b1, err := consumeByte()
@@ -214,10 +274,10 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		if err != nil {
 			return 0, err
 		}
-		return uint16(b2) + 256*uint16(b1), nil
+		return uint16(b1) + 256*uint16(b2), nil
 	}
-	// Big endian
-	consumeBEint16 := func() (int16, error) {
+	// Little endian
+	consumeLEuint16 := func() (uint16, error) {
 		b1, err := consumeByte()
 		if err != nil {
 			return 0, err
@@ -226,7 +286,19 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		if err != nil {
 			return 0, err
 		}
-		return int16(b2) + 256*int16(b1), nil
+		return 256*uint16(b1) + uint16(b2), nil
+	}
+	// Little endian
+	consumeLEint16 := func() (int16, error) {
+		b1, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		return 256*int16(b1) + int16(b2), nil
 	}
 
 	var adv BluetoothAdvertisement
@@ -259,7 +331,7 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 	}
 
 	// Parse manufacturer
-	if adv.Manufacturer, err = consumeLEuint16(); err != nil {
+	if adv.Manufacturer, err = consumeBEuint16(); err != nil {
 		return nil, err
 	}
 	if got, want := adv.Manufacturer, uint16(0x0499); got != want {
@@ -281,36 +353,35 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		return nil, fmt.Errorf("got format version %d, wanted %d", got, want)
 	}
 
-	if adv.Data5.Temperature, err = consumeBEint16(); err != nil {
+	if adv.Data5.Temperature, err = consumeLEint16(); err != nil {
 		return nil, err
 	}
-	if adv.Data5.Humidity, err = consumeBEuint16(); err != nil {
+	if adv.Data5.Humidity, err = consumeLEuint16(); err != nil {
 		return nil, err
 	}
-	if adv.Data5.Pressure, err = consumeBEuint16(); err != nil {
+	if adv.Data5.Pressure, err = consumeLEuint16(); err != nil {
 		return nil, err
 	}
-	if adv.Data5.AccelX, err = consumeBEint16(); err != nil {
+	if adv.Data5.AccelX, err = consumeLEint16(); err != nil {
 		return nil, err
 	}
-	if adv.Data5.AccelY, err = consumeBEint16(); err != nil {
+	if adv.Data5.AccelY, err = consumeLEint16(); err != nil {
 		return nil, err
 	}
-	if adv.Data5.AccelZ, err = consumeBEint16(); err != nil {
+	if adv.Data5.AccelZ, err = consumeLEint16(); err != nil {
 		return nil, err
 	}
 
-	// Power decoding seem off
 	if adv.Data5.CodedPower, err = consumeLEuint16(); err != nil {
 		return nil, err
 	}
-	adv.Data5.Voltage = adv.Data5.CodedPower & (1<<11 - 1)
-	adv.Data5.RSSI = (adv.Data5.CodedPower >> 11) & (1<<5 - 1)
+	adv.Data5.Voltage = (adv.Data5.CodedPower >> 5) & (1<<11 - 1)
+	adv.Data5.TxPower = (adv.Data5.CodedPower) & (1<<5 - 1)
 	if adv.Data5.MovementCounter, err = consumeByte(); err != nil {
 		return nil, err
 	}
 
-	if adv.Data5.MeasureSequence, err = consumeBEuint16(); err != nil {
+	if adv.Data5.MeasureSequence, err = consumeLEuint16(); err != nil {
 		return nil, err
 	}
 	for i := 0; i < 6; i++ {
@@ -341,9 +412,10 @@ type ConfigTagInfo struct {
 type Server struct {
 	cfgPerTag map[string]*ConfigTagInfo
 
-	m          sync.Mutex
-	lastRaw    []byte
-	lastParsed *StationInfo
+	m                 sync.Mutex
+	lastRaw           []byte
+	lastStationParsed *StationInfo
+	lastGatewayParsed *GatewayInfo
 }
 
 // New creates a new server.
@@ -370,16 +442,39 @@ func (s *Server) receive(_ http.ResponseWriter, r *http.Request) {
 	s.lastRaw = raw
 	s.m.Unlock()
 
-	data := &StationInfo{}
-	if err := json.Unmarshal(raw, data); err != nil {
-		fmt.Printf("Umarshal error: %v\n", err)
-		return
+	// Try decoding each known format.
+	stationInfo := &StationInfo{}
+	err = json.Unmarshal(raw, stationInfo)
+	if err != nil {
+		fmt.Printf("Station unmarshal error: %v\n", err)
+		stationInfo = nil
 	}
+	gatewayInfo := &GatewayInfo{}
+	err = json.Unmarshal(raw, gatewayInfo)
+	if err != nil {
+		fmt.Printf("Gateway unmarshal error: %v\n", err)
+		gatewayInfo = nil
+	}
+
 	s.m.Lock()
-	s.lastParsed = data
+	if stationInfo != nil {
+		s.lastStationParsed = stationInfo
+	}
+	if gatewayInfo != nil {
+		s.lastGatewayParsed = gatewayInfo
+	}
 	s.m.Unlock()
 
-	for _, tag := range data.Tags {
+	if stationInfo != nil {
+		s.exportStationInfo(stationInfo)
+	}
+	if gatewayInfo != nil {
+		s.exportGatewayInfo(gatewayInfo)
+	}
+}
+
+func (s *Server) exportStationInfo(stationInfo *StationInfo) {
+	for _, tag := range stationInfo.Tags {
 		tagName := tag.Name
 		if s.cfgPerTag[tag.ID] != nil && s.cfgPerTag[tag.ID].Name != "" {
 			tagName = s.cfgPerTag[tag.ID].Name
@@ -418,11 +513,47 @@ func (s *Server) receive(_ http.ResponseWriter, r *http.Request) {
 			}
 
 			// Export station info for each tag.
-			tagStationBatteryLevel.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(float64(data.BatteryLevel))
-			tagStationLocationAccuracy.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Accuracy)
-			tagStationLocationLatitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Latitude)
-			tagStationLocationLongitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(data.Location.Longitude)
+			tagStationBatteryLevel.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(float64(stationInfo.BatteryLevel))
+			tagStationLocationAccuracy.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(stationInfo.Location.Accuracy)
+			tagStationLocationLatitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(stationInfo.Location.Latitude)
+			tagStationLocationLongitude.With(prometheus.Labels{"name": tagName, "id": tag.ID}).Set(stationInfo.Location.Longitude)
 		}
+	}
+}
+
+func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
+	for macAddr, tag := range gatewayInfo.Data.Tags {
+		adv, err := decodeBluetoothData(tag.Data)
+		if err != nil {
+			fmt.Printf("unable to decode tag %s, data %s: %v", macAddr, tag.Data, err)
+			continue
+		}
+
+		tagName := macAddr
+		if s.cfgPerTag[macAddr] != nil && s.cfgPerTag[macAddr].Name != "" {
+			tagName = s.cfgPerTag[macAddr].Name
+		}
+
+		temperature := adv.Data5.TemperatureInCelsius()
+		pressure := adv.Data5.PressureInPa()
+		humidity := adv.Data5.HumidityInPercent()
+
+		if *debug {
+			fmt.Printf("Tag %s: mac=%q temp=%f pressure=%f humidity=%f\n", tagName, macAddr, temperature, pressure, humidity)
+		}
+
+		tagMetrics["temperature"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(temperature)
+		tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
+		tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
+		tagMetrics["accelx"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelXInG())
+		tagMetrics["accely"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelYInG())
+		tagMetrics["accelz"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelZInG())
+		tagMetrics["voltage"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.VoltageInVolts())
+		tagMetrics["txpower"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.TxPower))
+		tagMetrics["rssi"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.RSSI))
+		tagMetrics["dataformat"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.FormatVersion))
+		tagMetrics["movementcounter"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MovementCounter))
+		tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
 	}
 }
 
@@ -437,9 +568,9 @@ func (s *Server) Serve(w http.ResponseWriter, r *http.Request) {
 
 	s.m.Lock()
 	data := map[string]interface{}{
-		"LastRaw":        string(s.lastRaw),
-		"LastParsed":     s.lastParsed,
-		"LastParsedDump": spew.Sdump(s.lastParsed),
+		"LastRaw":               string(s.lastRaw),
+		"LastStationParsedDump": spew.Sdump(s.lastStationParsed),
+		"LastGatewayParsedDump": spew.Sdump(s.lastGatewayParsed),
 	}
 	s.m.Unlock()
 
@@ -463,8 +594,10 @@ Ruuvi Station proxy server.
 
 var indexDebugTpl = template.Must(template.New("index").Parse(`
 <html><body>
-<h1>Last parsed update</h1>
-<pre>{{.LastParsedDump}}</pre>
+<h1>Last station parsed update</h1>
+<pre>{{.LastStationParsedDump}}</pre>
+<h1>Last gateway parsed update</h1>
+<pre>{{.LastGatewayParsedDump}}</pre>
 <h1>Last raw</h1>
 <pre>{{.LastRaw}}</pre>
 </body></html>

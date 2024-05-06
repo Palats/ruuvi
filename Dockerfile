@@ -1,4 +1,4 @@
-FROM golang:1.14 AS builder
+FROM golang:1.21 AS builder
 
 RUN groupadd server && useradd --no-log-init --gid server --create-home server
 USER server:server

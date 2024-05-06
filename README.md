@@ -23,3 +23,9 @@ This server accepts data from Ruuvi sensors and exports the data to a `/metrics`
 
  * `example-station.json`: Example of data sent by Ruuvi Station App gateway mode; https://docs.ruuvi.com/ruuvi-station-app/gateway
  * `example-gateway-http.json`: Example of data sent by Ruuvi Gateway; https://docs.ruuvi.com/gw-data-formats/http-time-stamped-data-from-bluetooth-sensors
+
+For local testing:
+
+```
+curl --data @example-gateway-http.json localhost:8079
+```
