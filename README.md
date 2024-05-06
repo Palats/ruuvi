@@ -27,5 +27,5 @@ This server accepts data from Ruuvi sensors and exports the data to a `/metrics`
 For local testing:
 
 ```
-curl --data @example-gateway-http.json localhost:8079
+curl --data-binary @example-gateway-http.json localhost:8079
 ```

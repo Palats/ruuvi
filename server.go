@@ -49,10 +49,13 @@ var (
 		"movementcounter",
 		"measurementsequencenumber",
 	}
-	tagMetrics  map[string]*prometheus.GaugeVec
+	tagMetrics map[string]*prometheus.GaugeVec
+	// In seconds since epoch
 	tagUpdateAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ruuvi_updateat",
 	}, []string{"name", "id"})
+
+	// Ruuvi Station specific info
 	tagStationBatteryLevel = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		// Percentage; e.g. 60
 		Name: "ruuvi_station_batterylevel",
@@ -157,6 +160,10 @@ type GatewayData struct {
 	Tags map[string]GatewayTag `json:"tags"`
 }
 
+func (d *GatewayData) TimestampAsTime() time.Time {
+	return time.Unix(d.Timestamp, 0)
+}
+
 type GatewayTag struct {
 	// Typically, negative number
 	RSSI int64 `json:"rssi"`
@@ -165,6 +172,10 @@ type GatewayTag struct {
 	Timestamp int64 `json:"timestamp"`
 	// Relayed message from Bluetooth-sensor in hex encoding
 	Data string `json:"data"`
+}
+
+func (d *GatewayTag) TimestampAsTime() time.Time {
+	return time.Unix(d.Timestamp, 0)
 }
 
 // BluetoothAdvertisement is the data contains in a given Ruuvi sensor
@@ -554,6 +565,7 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 		tagMetrics["dataformat"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.FormatVersion))
 		tagMetrics["movementcounter"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MovementCounter))
 		tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
+		tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
 	}
 }
 
