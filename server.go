@@ -183,8 +183,12 @@ func (d *GatewayTag) TimestampAsTime() time.Time {
 // https://docs.ruuvi.com/communication/bluetooth-advertisements
 type BluetoothAdvertisement struct {
 	// Mandatory flags == 0x02 0x01 0x04 or 0x06 ?
-	Flags [3]byte
-	// Content length, == 0x1B == 27.
+	// Not present for Ruuvi Air
+	Flags    [3]byte
+	HasFlags bool
+	// Content length
+	// For Ruuvi == 0x1B == 27.
+	// For Ruuvi air == 0x2B
 	// That's the content after this field - incl. type & manufacturer.
 	Length byte
 	// Type == 0xff
@@ -194,7 +198,11 @@ type BluetoothAdvertisement struct {
 	// Raw payload
 	Payload []byte
 
-	Data5 DataFormat5
+	Data5  *DataFormat5
+	DataE1 *DataFormatE1
+
+	// Data remaining in the payload that was not decoded.
+	ExtraData []byte
 }
 
 // DataFormat5 represents the decoded values of a format 5 message.
@@ -261,6 +269,67 @@ func (d *DataFormat5) VoltageInVolts() float64 {
 	return 1.6 + float64(d.Voltage)/1000
 }
 
+// DataFormat5 represents the decoded values of a format 5 message.
+// https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-e1
+type DataFormatE1 struct {
+	// 0xE1
+	FormatVersion byte
+	// Temperature in 0.005 degrees
+	Temperature int16
+	// Humidity in 0.0025% (0-163.83% range, though realistically 0-100%)
+	Humidity uint16
+	// Pressure (16bit unsigned) in 1 Pa units, with offset of -50000 Pa
+	// i.e., actual pressure is this field + 50k Pa
+	Pressure uint16
+	// PM 1.0, ug/m^3. Resolution 0.1/bit, range 0 ... 1000. 16bit unsigned
+	PM1_0 uint16
+	// PM 2.5, ug/m^3. Resolution 0.1/bit, range 0 ... 1000. 16bit unsigned
+	PM2_5 uint16
+	// PM 4.0, ug/m^3. Resolution 0.1/bit, range 0 ... 1000. 16bit unsigned
+	PM4_0 uint16
+	// PM 10.0, ug/m^3. Resolution 0.1/bit, range 0 ... 1000. 16bit unsigned
+	PM10_0 uint16
+	// CO2 concentration, ppm. Resolution 1/bit, range 0 ... 40000. 16bit unsigned
+	CO2 uint16
+	// VOC index, unitless. Resolution 1 / bit, range 0 ... 500. 9 bit unsigned, least significant bit in Flags byte
+	VOCPartial byte
+	// NOX index, unitless. Resolution 1 / bit, range 0 ... 500. 9 bit unsigned, least significant bit in Flags byte
+	NOXPartial byte
+
+	// Luminosity, Lux. Resolution 0.01/bit, range 0 ... 144 284
+	// 3 bytes.
+	Luminosity uint32
+	Reserved1  [3]byte
+
+	// Measurement sequence counter. Each new sample increments counter by 1. 24bit unsigned
+	// 3 bytes.
+	Seq uint32
+
+	// Bit field
+	// 0x1: 1 -> Calibration in progress, sensor data not fully accurate yet. 0 -> Calibration complete
+	// 0x2, 0x4, 0x8, 0x10, 0x20 - reserved
+	// 0x40: VOC bit 9, 1-> set, 0 -> not set
+	// 0x80: NOX bit 9, 1-> set, 0 -> not set
+	Flags byte
+
+	Reserved2 [5]byte
+
+	// 48bit MAC address
+	MacAddress [6]byte
+}
+
+func (d *DataFormatE1) TemperatureInCelsius() float64 {
+	return float64(d.Temperature) * 0.005
+}
+
+func (d *DataFormatE1) PressureInPa() float64 {
+	return float64(d.Pressure) + 50000
+}
+
+func (d *DataFormatE1) HumidityInPercent() float64 {
+	return float64(d.Humidity) * 0.0025
+}
+
 func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 	decoded, err := hex.DecodeString(raw)
 	if err != nil {
@@ -274,6 +343,22 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 			return 0, fmt.Errorf("not enough data for index %d", lastIdx)
 		}
 		return decoded[lastIdx], nil
+	}
+	peek := func(want []byte) bool {
+		idx := lastIdx
+		for i := 0; i < len(want); i++ {
+			idx++
+			if len(decoded) <= idx {
+				return false
+				// return fmt.Errorf("not enough data to peek at index %d", idx)
+			}
+			if got, want := decoded[idx], want[idx]; got != want {
+				return false
+				// return fmt.Errorf("at index %d, got 0x%x, want 0x%x", idx, got, want)
+			}
+		}
+		return true
+		// return nil
 	}
 	// Big endian
 	consumeBEuint16 := func() (uint16, error) {
@@ -311,26 +396,52 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		}
 		return 256*int16(b1) + int16(b2), nil
 	}
+	// Little endian
+	consumeLEuint24 := func() (uint32, error) {
+		b1, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b2, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		b3, err := consumeByte()
+		if err != nil {
+			return 0, err
+		}
+		return 256*256*uint32(b1) + 256*uint32(b2) + uint32(b3), nil
+	}
 
 	var adv BluetoothAdvertisement
 
-	// Parse flags
-	if adv.Flags[0], err = consumeByte(); err != nil {
-		return nil, err
-	}
-	if adv.Flags[1], err = consumeByte(); err != nil {
-		return nil, err
-	}
-	if adv.Flags[2], err = consumeByte(); err != nil {
-		return nil, err
+	// Sometimes, there are flags.
+	if peek([]byte{0x02, 0x01, 0x06}) {
+		adv.HasFlags = true
+		if adv.Flags[0], err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if adv.Flags[1], err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if adv.Flags[2], err = consumeByte(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Parse length
 	if adv.Length, err = consumeByte(); err != nil {
 		return nil, err
 	}
-	if got, want := adv.Length, byte(27); got != want {
-		return nil, fmt.Errorf("got 0x%x at index %d, wanted 0x%x", got, lastIdx, want)
+	switch adv.Length {
+	case 0x1b:
+		// Type 5
+		// https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-5-rawv2
+	case 0x2b:
+		// Type E1
+		// https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-e1
+	default:
+		return nil, fmt.Errorf("got length 0x%x at index %d", adv.Length, lastIdx)
 	}
 
 	// Parse type
@@ -352,54 +463,141 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 	// Get the rest of the payload
 	// That does not advance lastIdx - we're just doing a copy here.
 	adv.Payload = decoded[lastIdx+1:]
-	if got, want := len(adv.Payload)+3, int(adv.Length); got != want {
-		return nil, fmt.Errorf("got %d bytes for payload, while length indicates %d", got, want)
+	// Expected length is advertised length minus:
+	//  - Manufacter field; 2 bytes
+	//  - Type; 1 byte
+	// The length field does not count itself.
+	expectedPayloadLength := int(adv.Length) - 3
+	if got := len(adv.Payload); got < expectedPayloadLength {
+		return nil, fmt.Errorf("got %d bytes for payload, while length indicates %d", got, expectedPayloadLength)
 	}
 
-	// Decode format v5
-	if adv.Data5.FormatVersion, err = consumeByte(); err != nil {
-		return nil, err
-	}
-	if got, want := adv.Data5.FormatVersion, byte(5); got != want {
-		return nil, fmt.Errorf("got format version %d, wanted %d", got, want)
-	}
+	// Uses the presence of initial bytes to guess if version 5 or E1.
+	// Double check with the content of the actual version format, which happens to be
+	// at the same place for both formats.
+	if adv.HasFlags {
+		// Decode format v5
+		adv.Data5 = &DataFormat5{}
 
-	if adv.Data5.Temperature, err = consumeLEint16(); err != nil {
-		return nil, err
-	}
-	if adv.Data5.Humidity, err = consumeLEuint16(); err != nil {
-		return nil, err
-	}
-	if adv.Data5.Pressure, err = consumeLEuint16(); err != nil {
-		return nil, err
-	}
-	if adv.Data5.AccelX, err = consumeLEint16(); err != nil {
-		return nil, err
-	}
-	if adv.Data5.AccelY, err = consumeLEint16(); err != nil {
-		return nil, err
-	}
-	if adv.Data5.AccelZ, err = consumeLEint16(); err != nil {
-		return nil, err
-	}
-
-	if adv.Data5.CodedPower, err = consumeLEuint16(); err != nil {
-		return nil, err
-	}
-	adv.Data5.Voltage = (adv.Data5.CodedPower >> 5) & (1<<11 - 1)
-	adv.Data5.TxPower = (adv.Data5.CodedPower) & (1<<5 - 1)
-	if adv.Data5.MovementCounter, err = consumeByte(); err != nil {
-		return nil, err
-	}
-
-	if adv.Data5.MeasureSequence, err = consumeLEuint16(); err != nil {
-		return nil, err
-	}
-	for i := 0; i < 6; i++ {
-		if adv.Data5.MacAddress[i], err = consumeByte(); err != nil {
+		if adv.Data5.FormatVersion, err = consumeByte(); err != nil {
 			return nil, err
 		}
+		if got, want := adv.Data5.FormatVersion, byte(5); got != want {
+			return nil, fmt.Errorf("got format version %d, wanted %d", got, want)
+		}
+
+		if adv.Data5.Temperature, err = consumeLEint16(); err != nil {
+			return nil, err
+		}
+		if adv.Data5.Humidity, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.Data5.Pressure, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.Data5.AccelX, err = consumeLEint16(); err != nil {
+			return nil, err
+		}
+		if adv.Data5.AccelY, err = consumeLEint16(); err != nil {
+			return nil, err
+		}
+		if adv.Data5.AccelZ, err = consumeLEint16(); err != nil {
+			return nil, err
+		}
+
+		if adv.Data5.CodedPower, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		adv.Data5.Voltage = (adv.Data5.CodedPower >> 5) & (1<<11 - 1)
+		adv.Data5.TxPower = (adv.Data5.CodedPower) & (1<<5 - 1)
+		if adv.Data5.MovementCounter, err = consumeByte(); err != nil {
+			return nil, err
+		}
+
+		if adv.Data5.MeasureSequence, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		for i := 0; i < 6; i++ {
+			if adv.Data5.MacAddress[i], err = consumeByte(); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		// Decode format E1
+		adv.DataE1 = &DataFormatE1{}
+
+		if adv.DataE1.FormatVersion, err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if got, want := adv.DataE1.FormatVersion, byte(0xE1); got != want {
+			return nil, fmt.Errorf("got format version %d, wanted %d", got, want)
+		}
+
+		if adv.DataE1.Temperature, err = consumeLEint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.Humidity, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.Pressure, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.PM1_0, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.PM2_5, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.PM4_0, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.PM10_0, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.CO2, err = consumeLEuint16(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.VOCPartial, err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.NOXPartial, err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.VOCPartial, err = consumeByte(); err != nil {
+			return nil, err
+		}
+		if adv.DataE1.Luminosity, err = consumeLEuint24(); err != nil {
+			return nil, err
+		}
+
+		for i := 0; i < 3; i++ {
+			if adv.DataE1.Reserved1[i], err = consumeByte(); err != nil {
+				return nil, err
+			}
+		}
+
+		if adv.DataE1.Seq, err = consumeLEuint24(); err != nil {
+			return nil, err
+		}
+
+		if adv.DataE1.Flags, err = consumeByte(); err != nil {
+			return nil, err
+		}
+
+		for i := 0; i < 5; i++ {
+			if adv.DataE1.Reserved2[i], err = consumeByte(); err != nil {
+				return nil, err
+			}
+		}
+
+		for i := 0; i < 6; i++ {
+			if adv.DataE1.MacAddress[i], err = consumeByte(); err != nil {
+				return nil, err
+			}
+		}
 	}
+
+	adv.ExtraData = decoded[lastIdx+1:]
 
 	return &adv, nil
 }
@@ -545,27 +743,50 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 			tagName = s.cfgPerTag[macAddr].Name
 		}
 
-		temperature := adv.Data5.TemperatureInCelsius()
-		pressure := adv.Data5.PressureInPa()
-		humidity := adv.Data5.HumidityInPercent()
-
-		if *debug {
-			fmt.Printf("Tag %s: mac=%q temp=%f pressure=%f humidity=%f\n", tagName, macAddr, temperature, pressure, humidity)
+		// Support only Data5 format for now.
+		if adv.Data5 == nil {
+			if adv.DataE1 != nil {
+			}
+			continue
 		}
 
-		tagMetrics["temperature"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(temperature)
-		tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
-		tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
-		tagMetrics["accelx"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelXInG())
-		tagMetrics["accely"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelYInG())
-		tagMetrics["accelz"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelZInG())
-		tagMetrics["voltage"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.VoltageInVolts())
-		tagMetrics["txpower"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.TxPower))
-		tagMetrics["rssi"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.RSSI))
-		tagMetrics["dataformat"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.FormatVersion))
-		tagMetrics["movementcounter"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MovementCounter))
-		tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
-		tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
+		if adv.Data5 != nil {
+			temperature := adv.Data5.TemperatureInCelsius()
+			pressure := adv.Data5.PressureInPa()
+			humidity := adv.Data5.HumidityInPercent()
+
+			if *debug {
+				fmt.Printf("Tag %s: mac=%q temp=%f pressure=%f humidity=%f\n", tagName, macAddr, temperature, pressure, humidity)
+			}
+
+			tagMetrics["temperature"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(temperature)
+			tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
+			tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
+			tagMetrics["accelx"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelXInG())
+			tagMetrics["accely"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelYInG())
+			tagMetrics["accelz"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.AccelZInG())
+			tagMetrics["voltage"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.Data5.VoltageInVolts())
+			tagMetrics["txpower"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.TxPower))
+			tagMetrics["rssi"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.RSSI))
+			tagMetrics["dataformat"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.FormatVersion))
+			tagMetrics["movementcounter"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MovementCounter))
+			tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
+			tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
+		} else if adv.DataE1 != nil {
+			temperature := adv.DataE1.TemperatureInCelsius()
+			pressure := adv.DataE1.PressureInPa()
+			humidity := adv.DataE1.HumidityInPercent()
+			if *debug {
+				fmt.Printf("Tag %s: mac=%q temp=%f pressure=%f humidity=%f\n", tagName, macAddr, temperature, pressure, humidity)
+			}
+			tagMetrics["temperature"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(temperature)
+			tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
+			tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
+		} else {
+			if *debug {
+				fmt.Printf("Tag %s: unknown format\n", tagName)
+			}
+		}
 	}
 }
 
