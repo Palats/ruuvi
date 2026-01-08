@@ -740,13 +740,6 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 			tagName = s.cfgPerTag[macAddr].Name
 		}
 
-		// Support only Data5 format for now.
-		if adv.Data5 == nil {
-			if adv.DataE1 != nil {
-			}
-			continue
-		}
-
 		if adv.Data5 != nil {
 			temperature := adv.Data5.TemperatureInCelsius()
 			pressure := adv.Data5.PressureInPa()
