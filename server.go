@@ -536,7 +536,7 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 	for macAddr, tag := range gatewayInfo.Data.Tags {
 		adv, err := decodeBluetoothData(tag.Data)
 		if err != nil {
-			fmt.Printf("unable to decode tag %s, data %s: %v", macAddr, tag.Data, err)
+			fmt.Printf("unable to decode tag %s, data %s: %v\n", macAddr, tag.Data, err)
 			continue
 		}
 
