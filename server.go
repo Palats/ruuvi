@@ -563,9 +563,6 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 		if adv.DataE1.NOXPartial, err = consumeByte(); err != nil {
 			return nil, err
 		}
-		if adv.DataE1.VOCPartial, err = consumeByte(); err != nil {
-			return nil, err
-		}
 		if adv.DataE1.Luminosity, err = consumeLEuint24(); err != nil {
 			return nil, err
 		}
