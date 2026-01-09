@@ -48,6 +48,18 @@ var (
 		"dataformat",
 		"movementcounter",
 		"measurementsequencenumber",
+
+		// In ug/m3
+		// "pm_1_0",
+		// "pm_2_5",
+		// "pm_4_0",
+		// "pm_10",
+		// Concentration, particle per million (PPM)
+		"co2",
+		// "voc",
+		// "nox",
+		// Lux
+		// "luminosity",
 	}
 	tagMetrics map[string]*prometheus.GaugeVec
 	// In seconds since epoch
@@ -269,7 +281,7 @@ func (d *DataFormat5) VoltageInVolts() float64 {
 	return 1.6 + float64(d.Voltage)/1000
 }
 
-// DataFormat5 represents the decoded values of a format 5 message.
+// DataFormatE1 represents the decoded values of a format E1 message.
 // https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-e1
 type DataFormatE1 struct {
 	// 0xE1
@@ -303,7 +315,7 @@ type DataFormatE1 struct {
 
 	// Measurement sequence counter. Each new sample increments counter by 1. 24bit unsigned
 	// 3 bytes.
-	Seq uint32
+	MeasurementSequenceNumber uint32
 
 	// Bit field
 	// 0x1: 1 -> Calibration in progress, sensor data not fully accurate yet. 0 -> Calibration complete
@@ -573,7 +585,7 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 			}
 		}
 
-		if adv.DataE1.Seq, err = consumeLEuint24(); err != nil {
+		if adv.DataE1.MeasurementSequenceNumber, err = consumeLEuint24(); err != nil {
 			return nil, err
 		}
 
@@ -772,6 +784,10 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 			tagMetrics["temperature"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(temperature)
 			tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
 			tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
+
+			tagMetrics["co2"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.DataE1.CO2))
+			tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
+			tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
 		} else {
 			if *debug {
 				fmt.Printf("Tag %s: unknown format\n", tagName)
