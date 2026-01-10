@@ -105,6 +105,12 @@ func init() {
 		}, []string{"name", "id"})
 		prometheus.MustRegister(tagMetrics[name])
 	}
+	prometheus.MustRegister(metricCO2)
+	prometheus.MustRegister(metricPM)
+	prometheus.MustRegister(metricVOC)
+	prometheus.MustRegister(metricNOX)
+	prometheus.MustRegister(metricLuminosity)
+	prometheus.MustRegister(metricCalibrating)
 	prometheus.MustRegister(tagUpdateAt)
 	prometheus.MustRegister(tagStationBatteryLevel)
 	prometheus.MustRegister(tagStationLocationAccuracy)
