@@ -363,11 +363,19 @@ func (d *DataFormatE1) HumidityInPercent() float64 {
 }
 
 func (d *DataFormatE1) VOC() float64 {
-	return float64(d.VOCPartial)*2 + float64(d.Flags&0x40)
+	v := float64(d.VOCPartial) * 2
+	if d.Flags&0x40 > 0 {
+		v += 1
+	}
+	return v
 }
 
 func (d *DataFormatE1) NOX() float64 {
-	return float64(d.NOXPartial)*2 + float64(d.Flags&0x80)
+	v := float64(d.NOXPartial) * 2
+	if d.Flags&0x80 > 0 {
+		v += 1
+	}
+	return v
 }
 
 func (d *DataFormatE1) Calibrating() bool {
