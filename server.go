@@ -48,20 +48,34 @@ var (
 		"dataformat",
 		"movementcounter",
 		"measurementsequencenumber",
-
-		// In ug/m3
-		// "pm_1_0",
-		// "pm_2_5",
-		// "pm_4_0",
-		// "pm_10",
-		// Concentration, particle per million (PPM)
-		"co2",
-		// "voc",
-		// "nox",
-		// Lux
-		// "luminosity",
 	}
 	tagMetrics map[string]*prometheus.GaugeVec
+
+	// Ruuvi Air specific
+	metricCO2 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		// Concentration, particle per million (PPM)
+		Name: "ruuvi_co2",
+	}, []string{"name", "id"})
+	metricPM = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		// In ug/m3.
+		// "Size" values: 1_0, 2_5, 4_0, 10
+		Name: "ruuvi_pm",
+	}, []string{"name", "id", "size"})
+	metricVOC = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_voc",
+	}, []string{"name", "id"})
+	metricNOX = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ruuvi_nox",
+	}, []string{"name", "id"})
+	metricLuminosity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		// In Lux
+		Name: "ruuvi_luminosity",
+	}, []string{"name", "id"})
+	metricCalibrating = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		// 0 or 1
+		Name: "ruuvi_calibrating",
+	}, []string{"name", "id"})
+
 	// In seconds since epoch
 	tagUpdateAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ruuvi_updateat",
@@ -340,6 +354,18 @@ func (d *DataFormatE1) PressureInPa() float64 {
 
 func (d *DataFormatE1) HumidityInPercent() float64 {
 	return float64(d.Humidity) * 0.0025
+}
+
+func (d *DataFormatE1) VOC() float64 {
+	return float64(d.VOCPartial)*2 + float64(d.Flags&0x40)
+}
+
+func (d *DataFormatE1) NOX() float64 {
+	return float64(d.NOXPartial)*2 + float64(d.Flags&0x80)
+}
+
+func (d *DataFormatE1) Calibrating() bool {
+	return d.Flags&0x1 != 0
 }
 
 func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
@@ -785,7 +811,37 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 			tagMetrics["pressure"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(pressure)
 			tagMetrics["humidity"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(humidity)
 
-			tagMetrics["co2"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.DataE1.CO2))
+			if adv.DataE1.PM1_0 != 0xFFFF {
+				metricPM.With(prometheus.Labels{"name": tagName, "id": macAddr, "size": "1_0"}).Set(float64(adv.DataE1.PM1_0) / 10)
+			}
+			if adv.DataE1.PM2_5 != 0xFFFF {
+				metricPM.With(prometheus.Labels{"name": tagName, "id": macAddr, "size": "2_5"}).Set(float64(adv.DataE1.PM2_5) / 10)
+			}
+			if adv.DataE1.PM4_0 != 0xFFFF {
+				metricPM.With(prometheus.Labels{"name": tagName, "id": macAddr, "size": "4_0"}).Set(float64(adv.DataE1.PM4_0) / 10)
+			}
+			if adv.DataE1.PM10_0 != 0xFFFF {
+				metricPM.With(prometheus.Labels{"name": tagName, "id": macAddr, "size": "10_0"}).Set(float64(adv.DataE1.PM10_0) / 10)
+			}
+			if adv.DataE1.CO2 != 0xFFFF {
+				metricCO2.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.DataE1.CO2))
+			}
+			if adv.DataE1.VOC() < 511 {
+				metricVOC.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.DataE1.VOC())
+			}
+			if adv.DataE1.NOX() < 511 {
+				metricNOX.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(adv.DataE1.NOX())
+			}
+			if adv.DataE1.Luminosity != 16777215 {
+				metricLuminosity.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.DataE1.Luminosity))
+			}
+
+			calibrating := float64(0.0)
+			if adv.DataE1.Calibrating() {
+				calibrating = 1.0
+			}
+			metricCalibrating.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(calibrating)
+
 			tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
 			tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
 		} else {
