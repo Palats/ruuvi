@@ -329,7 +329,7 @@ type DataFormatE1 struct {
 
 	// Measurement sequence counter. Each new sample increments counter by 1. 24bit unsigned
 	// 3 bytes.
-	MeasurementSequenceNumber uint32
+	MeasurementSequence uint32
 
 	// Bit field
 	// 0x1: 1 -> Calibration in progress, sensor data not fully accurate yet. 0 -> Calibration complete
@@ -611,7 +611,7 @@ func decodeBluetoothData(raw string) (*BluetoothAdvertisement, error) {
 			}
 		}
 
-		if adv.DataE1.MeasurementSequenceNumber, err = consumeLEuint24(); err != nil {
+		if adv.DataE1.MeasurementSequence, err = consumeLEuint24(); err != nil {
 			return nil, err
 		}
 
@@ -842,7 +842,7 @@ func (s *Server) exportGatewayInfo(gatewayInfo *GatewayInfo) {
 			}
 			metricCalibrating.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(calibrating)
 
-			tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.Data5.MeasureSequence))
+			tagMetrics["measurementsequencenumber"].With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(adv.DataE1.MeasurementSequence))
 			tagUpdateAt.With(prometheus.Labels{"name": tagName, "id": macAddr}).Set(float64(tag.Timestamp))
 		} else {
 			if *debug {
